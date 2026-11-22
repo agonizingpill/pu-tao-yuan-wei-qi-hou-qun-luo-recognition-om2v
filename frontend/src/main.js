@@ -41,10 +41,12 @@ async function render(message='') {
   let body, queued;
   try {
     if (page === 'blocks') {
-      const blocks = await api('/blocks');
+      const [blocks, replacements] = await Promise.all([api('/blocks'), api('/replacements')]);
       const block = blocks.find(b => b.id === state.block) || blocks[1] || blocks[0];
-      const history = block ? await api(`/blocks/${block.id}/samples`) : [];
-      body = blockPage(blocks, block, history, editable);
+      const [history, ledger] = block
+        ? await Promise.all([api(`/blocks/${block.id}/samples`), api(`/blocks/${block.id}/ledger`)])
+        : [[], {rounds: [], harvests: []}];
+      body = blockPage(blocks, block, history, ledger, replacements, editable, supervisor);
     } else if (page === 'clusters') {
       const [runs, labels] = await Promise.all([api('/runs'),api('/labels')]);
       const id = runs.find(r => r.id === state.run)?.id || runs[0]?.id;
@@ -93,6 +95,25 @@ async function mutate(action, data, id) {
       state.block = block.id;
       return `已登记地块 ${block.code}。`;
     }
+    case 'replacement': {
+      const payload = {
+        old_block_id: Number(data.old_block_id), reason: data.reason,
+        new_blocks: [0, 1].map(i => ({
+          code: data[`code_${i}`], name: data[`name_${i}`], cultivar: data[`cultivar_${i}`],
+          area_ha: Number(data[`area_ha_${i}`]), sensor: data[`sensor_${i}`],
+          east_m: Number(data[`east_m_${i}`]), north_m: Number(data[`north_m_${i}`]),
+          width_m: Number(data[`width_m_${i}`]), height_m: Number(data[`height_m_${i}`]),
+        })),
+      };
+      const rp = await api('/replacements', payload);
+      return `试划单 #${rp.id} 已开立，两块新地各自绑定探头留样。`;
+    }
+    case 'trial-run':
+      await api(`/replacements/${id}/runs`, {window_end: data.window_end});
+      return '试划采样已冻结并入队，拟合用两块新地替下旧地。';
+    case 'signoff':
+      await api(`/replacements/${id}/signoff`, data);
+      return '主管已签认，正式拟合名单与排灌一次性切换到两块新地。';
     case 'sample':
       await api('/samples', numeric(data,'block_id','temp_c','rh_pct'));
       return '读数已归档。可在群落页重新提交缺测窗口。';

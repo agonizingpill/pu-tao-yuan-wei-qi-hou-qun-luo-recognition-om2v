@@ -68,6 +68,15 @@ nav a[aria-current] {color:var(--vine);border-bottom-color:var(--vine);font-weig
 .tag {display:inline-block;padding:.07rem .46rem;border:1px solid oklch(56% .06 75 / .38);white-space:nowrap;font:.84rem/1.5 var(--detail);letter-spacing:.02em}
 .cool {background-color:var(--olive)}.balanced {background-color:var(--ochre)}.warm {background-color:var(--wine)}
 .neutral {background-color:oklch(91% .032 83)}.warning {background-color:var(--warm)}
+.tag.retired {background-color:oklch(85% .02 70);color:var(--muted)}
+.parcel.trial {border-style:dashed;border-color:var(--vine)}
+.parcel.retired {opacity:.55;filter:grayscale(.4)}
+.replacement-list {display:grid;gap:1rem;margin-top:.8rem}
+.replacement-card {padding:1rem 1.15rem 1.15rem;background:var(--sheet);border:1px solid var(--rule);border-top:3px solid var(--ochre)}
+.replacement-card.signed {border-top-color:var(--vine)}
+.trial-blocks {list-style:none;margin:.5rem 0;padding:0;display:grid;gap:.35rem;font-size:.92rem}
+.trial-fieldset {border:1px solid var(--rule);padding:.8rem 1rem 1rem;margin:.6rem 0;min-width:0}
+.trial-fieldset legend {padding:0 .45rem;font-weight:700;color:var(--vine)}
 .table-wrap {overflow:auto;margin:.45rem 0 .65rem}
 table {width:100%;border-collapse:collapse;font-size:.9rem;font-variant-numeric:tabular-nums}
 th,td {padding:.46rem .5rem;border-bottom:1px solid var(--rule);text-align:left;white-space:nowrap}

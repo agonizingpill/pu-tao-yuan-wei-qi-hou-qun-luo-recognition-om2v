@@ -18,6 +18,23 @@ def block_list(db):
     ''').fetchall()
 
 
+def block_ledger(db, block_id):
+    one(db, 'SELECT id FROM vine_block WHERE id=%s', (block_id,), '地块')
+    rounds = db.execute('''
+        SELECT r.id,r.code,r.starts_at,r.minutes,r.state,r.completed_at,
+               l.profile,l.revision,
+               (SELECT count(*) FROM harvest_note h WHERE h.round_id=r.id) AS harvest_count
+        FROM irrigation_round r JOIN climate_label l ON l.id=r.label_id
+        WHERE r.block_id=%s ORDER BY r.starts_at DESC,r.code DESC
+    ''', (block_id,)).fetchall()
+    harvests = db.execute('''
+        SELECT h.id,h.observed_at,h.brix,h.berry_count,h.note,r.code AS round_code
+        FROM harvest_note h JOIN irrigation_round r ON r.id=h.round_id
+        WHERE r.block_id=%s ORDER BY h.observed_at DESC,h.id DESC
+    ''', (block_id,)).fetchall()
+    return {'rounds': rounds, 'harvests': harvests}
+
+
 def register(db, data, actor):
     existing = db.execute('''
         SELECT code FROM vine_block

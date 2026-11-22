@@ -11,7 +11,7 @@ from redis.exceptions import RedisError
 
 from backend.scripts.seed_demo import seed
 from .operations_evidence import router as operations_evidence
-from . import clusters, fieldbook, irrigation, schemas
+from . import clusters, fieldbook, irrigation, replacements, schemas
 from .auth import check_password, identity, issue, require
 from .db import EVIDENCE_DIR, QUEUE, connect, lock_ledger, migrate, redis_client
 from .domain import Role
@@ -102,6 +102,32 @@ def samples(block_id: int, _user=readable):
         return fieldbook.sample_list(db, block_id)
 
 
+@app.get('/blocks/{block_id}/ledger')
+def block_ledger(block_id: int, _user=readable):
+    with connect() as db:
+        return fieldbook.block_ledger(db, block_id)
+
+
+@app.get('/replacements')
+def replacements_list(_user=readable):
+    with connect() as db:
+        return replacements.list_replacements(db)
+
+
+@app.post('/replacements', status_code=201)
+def open_replacement(data: schemas.ReplacementInput, user=editable):
+    with connect() as db:
+        lock_ledger(db)
+        return replacements.create_replacement(db, data, user['name'])
+
+
+@app.post('/replacements/{replacement_id}/signoff')
+def signoff_replacement(replacement_id: int, data: schemas.SignoffInput, user=supervised):
+    with connect() as db:
+        lock_ledger(db)
+        return replacements.signoff(db, replacement_id, data.reason, user['name'])
+
+
 @app.post('/samples', status_code=201)
 def add_sample(data: schemas.SampleInput, user=editable):
     with connect() as db:
@@ -123,7 +149,8 @@ def labels(_user=readable):
 def runs(_user=readable):
     with connect() as db:
         return db.execute('''
-            SELECT id,window_end,status,created_at,attempts,actor FROM climate_run ORDER BY id DESC LIMIT 60
+            SELECT id,window_end,status,created_at,attempts,actor,kind,replacement_id
+            FROM climate_run ORDER BY id DESC LIMIT 60
         ''').fetchall()
 
 
@@ -158,6 +185,14 @@ def create_run(data: schemas.RunInput, user=editable):
     with connect() as db:
         lock_ledger(db)
         run = clusters.submit(db, data.window_end, user['name'])
+    return notify(run)
+
+
+@app.post('/replacements/{replacement_id}/runs', status_code=202)
+def create_trial_run(replacement_id: int, data: schemas.RunInput, user=editable):
+    with connect() as db:
+        lock_ledger(db)
+        run = clusters.submit(db, data.window_end, user['name'], replacement_id=replacement_id)
     return notify(run)
 
 

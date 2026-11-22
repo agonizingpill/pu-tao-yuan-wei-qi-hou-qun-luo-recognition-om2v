@@ -26,12 +26,14 @@ def existing_round(db, round_id):
     return one(db, ROUND_VIEW + ' WHERE r.id=%s', (round_id,), '灌溉轮次')
 
 
-def scheduling_basis(db, block_id):
+def scheduling_basis(db, block_id, allow_retired=False):
     block = one(db, '''
-        SELECT b.code,l.id AS label_id,l.profile,p.profile AS proposed_profile
+        SELECT b.code,b.roster_state,l.id AS label_id,l.profile,p.profile AS proposed_profile
         FROM vine_block b LEFT JOIN climate_label l ON b.id=l.block_id AND l.state='active'
         LEFT JOIN climate_label p ON p.block_id=b.id AND p.state='proposed' WHERE b.id=%s
     ''', (block_id,), '地块')
+    if block['roster_state'] == 'trial' or (block['roster_state'] == 'retired' and not allow_retired):
+        raise HTTPException(409, '试划新地尚未接替入册，旧地已停止新增排灌；请在地块页查看试划状态')
     if block['proposed_profile'] and block['proposed_profile'] != block['profile']:
         raise HTTPException(409, '新标签需要主管确认，暂缓编排该地块')
     if not block['label_id']:
@@ -66,7 +68,8 @@ def replan(db, round_id, data, actor):
     row = existing_round(db, round_id)
     if row['state'] != RoundState.NEEDS_REPLAN:
         raise HTTPException(409, '只有确认受影响的轮次可重新排灌')
-    basis = scheduling_basis(db, row['block_id'])
+    # 旧地签认后若遗留待改排轮次，仍允许改排办结，但不接受新增排灌。
+    basis = scheduling_basis(db, row['block_id'], allow_retired=True)
     minutes = MINUTES[Profile(basis['profile'])]
     require_free_slot(db, row['block_id'], data.starts_at, minutes, round_id)
     db.execute('''

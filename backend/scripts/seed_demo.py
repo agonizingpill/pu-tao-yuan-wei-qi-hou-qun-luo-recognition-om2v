@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from backend.src.auth import hash_password
 from backend.src.clusters import submit
 from backend.src.db import connect, lock_ledger
+from backend.src.domain import RosterState, ReplacementState
 
 BASE_END = date(2026, 11, 14)
 NEXT_END = date(2026, 11, 20)
@@ -15,6 +16,12 @@ BLOCKS = (
     ('V-05', '南向砾石台', '赤霞珠', 1.90, 'WX-305', 658, 319, 258, 175),
     ('V-06', '东侧新垄', '赤霞珠', 1.45, 'WX-306', 383, 108, 236, 140),
 )
+# 北坡拆成两块试划新地，各自独立探头留样。
+TRIAL_BLOCKS = (
+    ('V-07', '北坡西台', '霞多丽', 0.78, 'WX-307', 317, 610, 121, 177, (22.4, 12.0, 70, 87)),
+    ('V-08', '北坡东台', '霞多丽', 0.78, 'WX-308', 438, 610, 122, 177, (30.6, 19.6, 37, 57)),
+)
+
 BASE = ((22.0, 11.5, 72, 89), (22.2, 11.7, 71, 88), (25.1, 14.0, 57, 76),
         (25.0, 14.2, 58, 76), (31.0, 20.0, 35, 55), (31.1, 20.2, 36, 54))
 
@@ -45,10 +52,43 @@ def seed():
                             )
                         ''', (row['id'], row['sensor'], day, phase, climate[j] + (1-offset)*0.2,
                               climate[j+2] + offset-1, f'wx-{end:%Y%m%d}.csv', row['id'], day, phase))
+        seed_replacement(db)
         if not db.execute('SELECT 1 FROM climate_run LIMIT 1').fetchone():
             submit(db, BASE_END, 'operator')
 
 
+def seed_replacement(db):
+    old = db.execute("SELECT id FROM vine_block WHERE code='V-02'").fetchone()
+    if old is None or db.execute("SELECT 1 FROM block_replacement WHERE old_block_id=%s LIMIT 1",
+                                  (old['id'],)).fetchone():
+        return
+    rp_id = db.execute('''
+        INSERT INTO block_replacement(old_block_id,state,reason,actor)
+        VALUES (%s,%s,%s,'operator') RETURNING id
+    ''', (old['id'], ReplacementState.TRIAL, '北坡旧藤按坡向拆为东西两台，试划期间各自留样。')).fetchone()['id']
+    for block in TRIAL_BLOCKS:
+        code, name, cultivar, area, sensor, east, north, width, height, climate = block
+        db.execute('''
+            INSERT INTO vine_block(code,name,cultivar,area_ha,sensor,east_m,north_m,width_m,height_m,
+                                   roster_state,replacement_id)
+            SELECT %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+            WHERE NOT EXISTS (SELECT 1 FROM vine_block WHERE code=%s)
+        ''', (code, name, cultivar, area, sensor, east, north, width, height,
+              RosterState.TRIAL, rp_id, code))
+        row = db.execute('SELECT id,sensor FROM vine_block WHERE code=%s', (code,)).fetchone()
+        for offset in (2, 1, 0):
+            day = NEXT_END - timedelta(days=offset)
+            for j, phase in enumerate(('day', 'night')):
+                db.execute('''
+                    INSERT INTO microclimate_sample(block_id,sensor,observed_day,slot,temp_c,rh_pct,source,actor)
+                    SELECT %s,%s,%s,%s,%s,%s,%s,'operator' WHERE NOT EXISTS (
+                        SELECT 1 FROM microclimate_sample WHERE block_id=%s AND observed_day=%s AND slot=%s
+                    )
+                ''', (row['id'], row['sensor'], day, phase, climate[j] + (1-offset)*0.2,
+                      climate[j+2] + offset-1, f'wx-trial-{NEXT_END:%Y%m%d}.csv',
+                      row['id'], day, phase))
+
+
 if __name__ == '__main__':
     seed()
-    print('Seed ready: six blocks, two field windows, and three accounts.')
+    print('Seed ready: six blocks, two trial blocks, two field windows, and three accounts.')

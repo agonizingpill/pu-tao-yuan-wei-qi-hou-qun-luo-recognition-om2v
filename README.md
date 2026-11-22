@@ -59,20 +59,34 @@ Docker 服务为 `frontend`、`backend`、`worker`、`db`、`redis`。数据库�
 
 标签候选只在变更影响已排轮次时进入主管台。确认与标记待改排在同一事务提交。凉湿、温和、暖干对应预设的 20、35、50 分钟。改排保留最初版本引用，审计附前后版本、时段与时长。录入采收观察要求轮次已完灌、时间相符且每轮仅一笔。三类标签和滴灌时长是基于合成观测的演示规则。传感器和执行设备通过人员录入与登记协作。
 
+## 地块试划与接替
+
+北坡一类大地块可在地块页拆成两块试划新地，各自绑定独立探头并分别留样，规则如下：
+
+- **试划期间**：旧地仍为在册正式地块，排灌、完灌、改排、采收照常；两块新地为 `trial` 状态，只接受各自绑定探头的采样，不能编排滴灌。
+- **试划拟合**：试划单发起独立的 `trial` 识别批次，快照用两块新地替下旧地（其余在册正式地块不变），不改变正式拟合名单。试划批次完成后一律进入主管确认，不会自动发布；正式批次与试划批次可同时开放。
+- **签认切换**：两块新地都判出群落、且旧地没有 `scheduled/needs_replan` 的待灌单后，灌溉主管在地块页签认。签认在一个事务内把旧地置为 `retired`、两块新地置为 `active`，仅激活两块新地的候选标签并把试划批次置为生效，其他地块标签保持不变。
+- **并发口径**：签认与旧地排灌共用同一把账本事务锁（`pg_advisory_xact_lock`），以入账先后为准；签认先到而待灌单未办结时整笔回滚，不影响后续完灌，办结后可再次签认。
+- **拟合失败**：试划批次失败后保留原快照，可按原采样重试。
+- **历史查询**：旧地完灌轮次与采收观察永久保留，在地块页台账和采收页仍按原地块查询；旧地不再接受新增排灌。
+
+接口：`GET/POST /replacements`、`POST /replacements/{id}/runs`、`POST /replacements/{id}/signoff`、`GET /blocks/{id}/ledger`。试划与登记需要记录员权限，签认仅灌溉主管可用。演示种子额外提供北坡 `V-07`、`V-08` 两块试划新地（探头 `WX-307`、`WX-308`）及对应采样。
+
 ## 代码职责
 
 | 路径 | 说明 |
 |---|---|
-| `backend/migrations/001_field_ledger.sql` | 领域表、外键、版本和活动状态约束 |
-| `backend/src/schemas.py`、`backend/src/domain.py` | API 输入与领域枚举 |
+| `backend/migrations/001_field_ledger.sql`、`002_block_replacement.sql` | 领域表、外键、版本、活动状态约束与试划接替结构 |
+| `backend/src/schemas.py`、`backend/src/domain.py` | API 输入与领域枚举（含在册状态、试划单状态、批次类型） |
 | `backend/src/app.py`、`backend/src/auth.py`、`backend/src/db.py` | 路由、权限、中间件、连接和审计 |
 | `backend/src/fieldbook.py`、`clusters.py`、`irrigation.py` | 地块采样、标签发布及滴灌与采收事务 |
+| `backend/src/replacements.py` | 试划单开立、试划快照口径与主管一次性签认切换 |
 | `backend/src/mixture.py`、`backend/src/worker.py` | GaussianMixture 拟合、Redis 通知、数据库恢复与文件证据 |
-| `backend/scripts/seed_demo.py` | 幂等初始化演示数据 |
+| `backend/scripts/seed_demo.py` | 幂等初始化演示数据（含北坡两块试划新地） |
 | `frontend/src/api.js`、`main.js`、`ui.js` | 原生 ES modules 的 API、会话与页面状态、共享组件 |
-| `frontend/src/blocks.js`、`clusters.js`、`irrigation.js` | 勘测图、识别批次、排灌、采收表单和账簿 |
+| `frontend/src/blocks.js`、`clusters.js`、`irrigation.js` | 试划接替、勘测图、识别批次、排灌、采收表单和账簿 |
 
-共享枚举 `Role`、`Slot`、`Profile`、`RoundState` 定义于 `backend/src/domain.py`、`frontend/src/domain.js`，数据库约束位于 `backend/migrations/001_field_ledger.sql`。识别批次与标签状态在数据库约束和 `backend/src/clusters.py` 中迁移，在 `frontend/src/domain.js` 中映射显示。
+共享枚举 `Role`、`Slot`、`Profile`、`RoundState`、`RosterState`、`RunKind` 定义于 `backend/src/domain.py`、`frontend/src/domain.js`，数据库约束位于 `backend/migrations/001_field_ledger.sql` 与 `002_block_replacement.sql`。识别批次、试划单与标签状态在数据库约束和 `backend/src/clusters.py`、`backend/src/replacements.py` 中迁移，在 `frontend/src/domain.js` 中映射显示。
 
 ## License
 

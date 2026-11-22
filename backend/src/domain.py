@@ -25,4 +25,20 @@ class RoundState(StrEnum):
     CANCELLED = 'cancelled'
 
 
+class RosterState(StrEnum):
+    ACTIVE = 'active'
+    TRIAL = 'trial'
+    RETIRED = 'retired'
+
+
+class RunKind(StrEnum):
+    OFFICIAL = 'official'
+    TRIAL = 'trial'
+
+
+class ReplacementState(StrEnum):
+    TRIAL = 'trial'
+    SIGNED = 'signed'
+
+
 MINUTES = {Profile.COOL: 20, Profile.BALANCED: 35, Profile.WARM: 50}

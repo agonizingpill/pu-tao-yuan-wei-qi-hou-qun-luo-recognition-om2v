@@ -19,13 +19,16 @@ export function clusterPage(runs, run, labels, canWrite, supervisor) {
     <div class="spread ${review ? 'review-spread' : ''}">
       <section>
         <div class="section-label"><h2>识别批次</h2>${run ? `<span class="tag ${review || run.status==='blocked' ? 'warning' : 'neutral'}">${runStates[run.status]}</span>` : ''}</div>
-        ${runs.length ? `<div class="selector">${select('run','查看采样窗口',runs.map(r => [r.id,`${r.window_end} · ${runStates[r.status]} · #${r.id}`]), run?.id)}</div>` : notice('从有完整采样的窗口发起第一次识别。')}
+        ${runs.length ? `<div class="selector">${select('run','查看采样窗口',runs.map(r => [r.id,`${r.window_end} · ${r.kind === 'trial' ? '试划 · ' : ''}${runStates[r.status]} · #${r.id}`]), run?.id)}</div>` : notice('从有完整采样的窗口发起第一次识别。')}
+        ${run?.kind === 'trial' ? notice('这是试划拟合：快照以两块新地替下旧地，候选标签只在地块页试划单签认后一次性生效，不影响其他地块。') : ''}
         ${run?.error ? notice(run.error, 'caution') : ''}
         ${run?.status === 'queued' ? notice('采样快照已冻结，正在等待后台识别。') : ''}
-        ${review ? `<div class="review"><h3>这次标签变更影响已排轮次</h3><p>确认前继续沿用旧标签，受影响的轮次暂缓执行。确认后需按新标签改排。</p>
+        ${review ? (run?.kind === 'trial'
+          ? `<div class="review"><h3>试划候选标签待主管签认</h3><p>试划批次不走本页确认。请到「地块与采样」的试划单办理签认；旧地待灌单办结后才会一次性切换正式名单与排灌。</p></div>`
+          : `<div class="review"><h3>这次标签变更影响已排轮次</h3><p>确认前继续沿用旧标签，受影响的轮次暂缓执行。确认后需按新标签改排。</p>
           ${table(['轮次','地块','排定时间','旧标签','候选标签'],run.affected.map(r => `<tr><td>${safe(r.code)}</td><td>${safe(r.block)}</td><td>${localTime(r.starts_at)}</td><td>${tag(r.basis_profile)}</td><td>${tag(r.proposed_profile)}</td></tr>`))}
           ${supervisor ? `<form data-action="decision" data-id="${run.id}">${paragraph('reason','确认或退回理由','例：核对北坡备用探头，调整下一轮滴灌。')}
-          <div class="actions"><button name="approve" value="true" class="primary">确认并标记待改排</button><button name="approve" value="false" class="secondary">退回候选标签</button></div></form>` : notice('请通知灌溉主管确认。')}</div>` : ''}
+          <div class="actions"><button name="approve" value="true" class="primary">确认并标记待改排</button><button name="approve" value="false" class="secondary">退回候选标签</button></div></form>` : notice('请通知灌溉主管确认。')}</div>`) : ''}
         ${healthRows?.length ? `<h3>探头覆盖</h3>${table(['地块','探头','有效读数','缺测班次'],healthRows)}` : ''}
         ${run?.status === 'failed' && canWrite ? `<form data-action="retry" data-id="${run.id}">${button('按原快照重试')}</form>` : ''}
         ${run ? `<p class="muted hash" title="${safe(run.digest)}">快照 ${safe(run.digest.slice(0,16))} · 计算 ${run.attempts} 次</p>` : ''}

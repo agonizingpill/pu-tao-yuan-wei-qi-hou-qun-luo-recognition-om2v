@@ -37,6 +37,20 @@ class BlockInput(Input):
         return self
 
 
+class TrialBlockInput(BlockInput):
+    pass
+
+
+class ReplacementInput(Input):
+    old_block_id: int = Field(gt=0)
+    reason: Narrative
+    new_blocks: list[TrialBlockInput] = Field(min_length=2, max_length=2)
+
+
+class SignoffInput(Input):
+    reason: Narrative
+
+
 class SampleInput(Input):
     block_id: int = Field(gt=0)
     sensor: Code

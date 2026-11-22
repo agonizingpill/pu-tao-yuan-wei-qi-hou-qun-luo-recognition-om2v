@@ -6,10 +6,10 @@ from fastapi import HTTPException
 from psycopg.types.json import Jsonb
 
 from .db import event
-from .domain import Slot
+from .domain import RunKind, Slot
 from .fieldbook import one
 
-RUN_FIELDS = 'id,window_end,status,digest,coverage,result,error,attempts,actor,created_at'
+RUN_FIELDS = 'id,window_end,status,digest,coverage,result,error,attempts,actor,created_at,kind,replacement_id'
 
 
 def run_detail(db, run_id):
@@ -18,9 +18,27 @@ def run_detail(db, run_id):
     return run
 
 
-def make_snapshot(db, end):
+def snapshot_blocks(db, end, replacement_id=None):
+    if replacement_id is None:
+        # 正式拟合：只含在册正式地块（旧地待签认期间仍在册，新地尚未入册）。
+        return db.execute("SELECT id,code,sensor FROM vine_block WHERE roster_state='active' ORDER BY code").fetchall()
+    rp = one(db, 'SELECT * FROM block_replacement WHERE id=%s', (replacement_id,), '试划单')
+    if rp['state'] != 'trial':
+        raise HTTPException(409, '该试划单已签认，不能再发起试划拟合')
+    blocks = db.execute('''
+        SELECT id,code,sensor FROM vine_block
+        WHERE roster_state='active' AND id<>%s
+        UNION ALL
+        SELECT id,code,sensor FROM vine_block
+        WHERE replacement_id=%s AND roster_state='trial'
+        ORDER BY code
+    ''', (rp['old_block_id'], replacement_id)).fetchall()
+    return blocks
+
+
+def make_snapshot(db, end, replacement_id=None):
     start = end - timedelta(days=2)
-    blocks = db.execute('SELECT id,code,sensor FROM vine_block ORDER BY code').fetchall()
+    blocks = snapshot_blocks(db, end, replacement_id)
     samples = db.execute('''
         SELECT id,block_id,observed_day,slot,temp_c,rh_pct,source
         FROM microclimate_sample WHERE observed_day BETWEEN %s AND %s ORDER BY observed_day,slot,id
@@ -39,18 +57,31 @@ def make_snapshot(db, end):
     return snapshot, coverage
 
 
-def submit(db, end, actor):
-    if db.execute("SELECT 1 FROM climate_run WHERE status IN ('queued','review')").fetchone():
+def submit(db, end, actor, replacement_id=None):
+    kind = RunKind.TRIAL if replacement_id is not None else RunKind.OFFICIAL
+    open_sql = "SELECT 1 FROM climate_run WHERE status IN ('queued','review') AND kind=%s"
+    open_params = [kind]
+    if replacement_id is not None:
+        open_sql += ' AND replacement_id=%s'
+        open_params.append(replacement_id)
+    if db.execute(open_sql, open_params).fetchone():
         raise HTTPException(409, '请先处理当前识别批次')
-    latest = db.execute("SELECT max(window_end) AS day FROM climate_run WHERE status='effective'").fetchone()['day']
-    if latest is not None and end < latest:
-        raise HTTPException(409, '窗口早于当前生效标签的采样窗口')
-    snapshot, coverage = make_snapshot(db, end)
-    digest = hashlib.sha256(json.dumps({'window_end': end.isoformat(), 'blocks': snapshot},
-                                       ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    prior = db.execute('''
-        SELECT id FROM climate_run WHERE digest=%s AND status='effective' ORDER BY id DESC LIMIT 1
-    ''', (digest,)).fetchone()
+    if kind == RunKind.OFFICIAL:
+        latest = db.execute("SELECT max(window_end) AS day FROM climate_run WHERE status='effective' AND kind='official'").fetchone()['day']
+        if latest is not None and end < latest:
+            raise HTTPException(409, '窗口早于当前生效标签的采样窗口')
+    snapshot, coverage = make_snapshot(db, end, replacement_id)
+    digest = hashlib.sha256(json.dumps(
+        {'window_end': end.isoformat(), 'replacement_id': replacement_id, 'blocks': snapshot},
+        ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    prior_sql = '''
+        SELECT id FROM climate_run WHERE digest=%s AND status='effective'
+    '''
+    prior_params = [digest]
+    if replacement_id is not None:
+        prior_sql += ' AND replacement_id=%s'
+        prior_params.append(replacement_id)
+    prior = db.execute(prior_sql + ' ORDER BY id DESC LIMIT 1', prior_params).fetchone()
     if prior:
         return run_detail(db, prior['id'])
     reason = None
@@ -61,11 +92,11 @@ def submit(db, end, actor):
         reason = '缺测超过 25%，请补录后再次提交：' + '、'.join(deficient)
     state = 'blocked' if reason else 'queued'
     run_id = db.execute('''
-        INSERT INTO climate_run(window_end,status,snapshot,digest,coverage,error,actor)
-        VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id
-    ''', (end, state, Jsonb(snapshot), digest, Jsonb(coverage), reason, actor)).fetchone()['id']
+        INSERT INTO climate_run(window_end,status,snapshot,digest,coverage,error,actor,kind,replacement_id)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+    ''', (end, state, Jsonb(snapshot), digest, Jsonb(coverage), reason, actor, kind, replacement_id)).fetchone()['id']
     event(db, actor, 'cluster_blocked' if reason else 'snapshot_queued', run_id,
-          digest=digest, reason=reason, deficient=deficient)
+          digest=digest, reason=reason, deficient=deficient, kind=kind, replacement_id=replacement_id)
     return run_detail(db, run_id)
 
 
@@ -82,6 +113,10 @@ def affected_rounds(db, run_id):
 
 def publish(db, run_id, actor, reason, affected):
     db.execute('''
+        UPDATE climate_label l SET block_roster_state=b.roster_state
+        FROM vine_block b WHERE b.id=l.block_id AND l.run_id=%s
+    ''', (run_id,))
+    db.execute('''
         UPDATE climate_label current SET state='superseded'
         FROM climate_label proposed
         WHERE current.state='active' AND proposed.run_id=%s AND proposed.state='proposed'
@@ -96,24 +131,33 @@ def publish(db, run_id, actor, reason, affected):
 
 
 def store_fit(db, run_id, result):
+    run = one(db, 'SELECT kind,replacement_id FROM climate_run WHERE id=%s', (run_id,), '识别批次')
     for item in result['assignments']:
         block_id = item['block_id']
+        roster_state = one(db, 'SELECT roster_state FROM vine_block WHERE id=%s',
+                           (block_id,), '地块')['roster_state']
         db.execute('''
-            INSERT INTO climate_label(block_id,run_id,revision,profile,confidence,state)
-            SELECT %s,%s,COALESCE(max(revision),0)+1,%s,%s,'proposed'
+            INSERT INTO climate_label(block_id,run_id,revision,profile,confidence,state,block_roster_state)
+            SELECT %s,%s,COALESCE(max(revision),0)+1,%s,%s,'proposed',%s
             FROM climate_label WHERE block_id=%s
-        ''', (block_id, run_id, item['profile'], item['confidence'], block_id))
+        ''', (block_id, run_id, item['profile'], item['confidence'], roster_state, block_id))
     impacted = affected_rounds(db, run_id)
+    # 试划批次只在试划单签认时一次性发布，不自动生效。
+    next_status = 'review' if impacted or run['kind'] == RunKind.TRIAL else 'queued'
     db.execute('UPDATE climate_run SET status=%s,result=%s,error=NULL,attempts=attempts+1 WHERE id=%s',
-               ('review' if impacted else 'queued', Jsonb(result), run_id))
+               (next_status, Jsonb(result), run_id))
     if impacted:
         event(db, 'worker', 'review_required', run_id, rounds=[item['code'] for item in impacted])
+    elif run['kind'] == RunKind.TRIAL:
+        event(db, 'worker', 'trial_review_required', run_id, replacement_id=run['replacement_id'])
     else:
         publish(db, run_id, 'worker', '没有已排轮次受到影响', [])
 
 
 def decide(db, run_id, approve, reason, actor):
     run = run_detail(db, run_id)
+    if run['kind'] != RunKind.OFFICIAL:
+        raise HTTPException(409, '试划拟合请在地块页通过试划单签认切换')
     if run['status'] != 'review':
         raise HTTPException(409, '该识别批次不在主管确认阶段')
     if approve:
@@ -127,7 +171,12 @@ def decide(db, run_id, approve, reason, actor):
 
 def retry(db, run_id, actor):
     run = run_detail(db, run_id)
-    newer = db.execute('SELECT 1 FROM climate_run WHERE id>%s LIMIT 1', (run_id,)).fetchone()
+    newer_sql = 'SELECT 1 FROM climate_run WHERE id>%s'
+    newer_params = [run_id]
+    if run['replacement_id'] is not None:
+        newer_sql += ' AND replacement_id=%s'
+        newer_params.append(run['replacement_id'])
+    newer = db.execute(newer_sql + ' LIMIT 1', newer_params).fetchone()
     if run['status'] != 'failed' or newer:
         raise HTTPException(409, '只有最新一笔失败的计算可以按原快照重试')
     db.execute("UPDATE climate_run SET status='queued',error=NULL WHERE id=%s", (run_id,))
